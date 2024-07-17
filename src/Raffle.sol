@@ -3,8 +3,8 @@
 pragma solidity ^0.8.19;
 
 
-import {VRFCoordinatorV2Interface} from "@chainlink/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
-import {VRFConsumerBaseV2} from "@chainlink/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
+import {VRFCoordinatorV2Interface} from "../lib/chainlink-brownie-contracts/contracts/src/v0.8/interfaces/VRFCoordinatorV2Interface.sol";
+import {VRFConsumerBaseV2} from "../lib/chainlink-brownie-contracts/contracts/src/v0.8/vrf/VRFConsumerBaseV2.sol";
 
 
 contract Raffle is VRFConsumerBaseV2{
@@ -12,6 +12,11 @@ contract Raffle is VRFConsumerBaseV2{
     error Raffle_TRANSFER_FAILED();
     error Raffle_INVALID_INTERVAL();
     error Raffle_NOT_OPEN();
+    error Raffle_UPKEEP_FAILED(
+        uint256 currentBalance,
+        uint256 participantsLength,
+        uint256 raffleState
+    );
 
     enum RaffleState {
         OPEN,
@@ -65,7 +70,15 @@ contract Raffle is VRFConsumerBaseV2{
         emit ParticipantEntered(msg.sender);
     }
 
-    function pickWinner() external {
+    function performUpkeep(bytes calldata /* performData */) external {
+        (bool upkeeped, ) = checkUpkeep("");
+        if (!upkeeped) {
+            revert Raffle_UPKEEP_FAILED(
+                address(this).balance,
+                i_participants.length,
+                uint256(i_state)
+            );
+        }
         // check if the time has passed
         if (block.timestamp < (i_lastTimeStamp + i_interval)) {
             revert Raffle_INVALID_INTERVAL();
@@ -73,7 +86,7 @@ contract Raffle is VRFConsumerBaseV2{
         i_state = RaffleState.CALCULATING_WINNER;
         // Will revert if subscription is not set and funded.
         // Will revert if subscription is not set and funded.
-        uint256 requestId = i_coordinator.requestRandomWords(
+        i_coordinator.requestRandomWords(
             i_gasLane,
             i_subscriptionId,
             REQUEST_CONFIRMATIONS,
@@ -83,10 +96,29 @@ contract Raffle is VRFConsumerBaseV2{
         // pick a winner
     }
 
+    /**
+     * @dev This is the function that the Chainlink Keeper nodes call
+     * they look for `upkeepNeeded` to return True.
+     * the following should be true for this to return true:
+     * 1. The time interval has passed between raffle runs.
+     * 2. The lottery is open.
+     * 3. The contract has ETH.
+     * 4. Implicity, your subscription is funded with LINK.
+     */
+    function checkUpkeep(bytes memory /* checkData */) public view returns (bool upkeepNeeded, bytes memory /* performData */) {
+        // check if the time has passed
+        bool timeHashPassed = block.timestamp >= (i_lastTimeStamp + i_interval);
+        bool isRaffleOpen = i_state == RaffleState.OPEN;
+        bool hasBalance = address(this).balance > 0;
+        bool playersLength = i_participants.length > 0;
+        upkeepNeeded = timeHashPassed && isRaffleOpen && hasBalance && playersLength;
+        return (upkeepNeeded, "");
+    }
+
 
     //CEI: Check Effect Interaction
     function fulfillRandomWords(
-        uint256 _requestId,
+        uint256 /* requestId */,
         uint256[] memory _randomWords
     ) internal override {
         // check
@@ -108,5 +140,13 @@ contract Raffle is VRFConsumerBaseV2{
             revert Raffle_TRANSFER_FAILED();
         }
 
+    }
+    // getter 
+    function getRaffleState() external view returns (RaffleState) {
+        return i_state;
+    }
+
+    function getParticipants(uint256 _index) external view returns (address) {
+        return i_participants[_index];
     }
 }
